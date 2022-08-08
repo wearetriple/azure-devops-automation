@@ -1,0 +1,35 @@
+{
+    "azureDevOps": {
+        "organizationName": "{devops name}",
+        "projectName": "{devops project name}"
+    },
+    "serviceConnections": [
+        {
+            "name": "RESOURCEGROUP-{ENV}-{REGION}-RG-1",
+            "scope": "resourcegroup",
+            "regions": [
+                {
+                    "REGION": "AZWE",
+                    "location": "westeurope"
+                }
+            ],
+            "environments": [
+                {
+                    "ENV": "D",
+                    "subscriptionId": "{subscription id}"
+                }
+            ],
+            "resourceGroups": {
+                "{name}": [
+                    "Contributor"
+                ],
+                "OTHERRESOURCEGROUP-{ENV}-{REGION}-RG-1": [
+                    "Contributor"
+                ]
+            },
+            "subscription": [
+                "Reader"
+            ]
+        }
+    ]
+}
