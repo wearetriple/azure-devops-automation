@@ -19,6 +19,56 @@ foreach ($api in $assignments.psobject.properties.name) {
 
       $appRegistration = Get-AzureADMSApplication -Filter "DisplayName eq '$appRegistrationName'"
 
+      if (!$appRegistration) {
+         Write-Host "Creating new app registration for $appRegistrationName"
+
+         $appRegistration = New-AzureADMSApplication `
+            -DisplayName $appRegistrationName `
+            -IdentifierUris "api://$appRegistrationName" `
+            -SignInAudience "AzureADMyOrg" `
+            -AppRoles @{ Id = "21111111-1111-1111-1111-111111111111"; DisplayName = "API"; AllowedMemberTypes = @("User", "Application"); Description = "API"; Value = "API" }
+
+         $permissionScope = New-Object 'Microsoft.Open.MSGraph.Model.PermissionScope'
+         $permissionScope.AdminConsentDescription = "Default"
+         $permissionScope.adminConsentDisplayName = "Default"
+         $permissionScope.Id = "31111111-1111-1111-1111-111111111111"
+         $permissionScope.IsEnabled = $true
+         $permissionScope.Type = "Admin"
+         $permissionScope.Value = "Default"
+
+         $appRegistration.Api.Oauth2PermissionScopes = New-Object 'System.Collections.Generic.List[Microsoft.Open.MSGraph.Model.PermissionScope]'
+         $appRegistration.Api.Oauth2PermissionScopes.Add($permissionScope)
+
+         Set-AzureADMSApplication -ObjectId $appRegistration.Id -Api $appRegistration.Api | out-null
+
+         # add az cli as allowed app
+         $preAuthorizedApplication1 = New-Object 'Microsoft.Open.MSGraph.Model.PreAuthorizedApplication'
+         $preAuthorizedApplication1.AppId = "04b07795-8ddb-461a-bbee-02f9e1bf7b46"
+         $preAuthorizedApplication1.DelegatedPermissionIds = @("31111111-1111-1111-1111-111111111111")
+            
+         # add visual studio as allowed app
+         $preAuthorizedApplication2 = New-Object 'Microsoft.Open.MSGraph.Model.PreAuthorizedApplication'
+         $preAuthorizedApplication2.AppId = "872cd9fa-d31f-45e0-9eab-6e460a02d1f1"
+         $preAuthorizedApplication2.DelegatedPermissionIds = @("31111111-1111-1111-1111-111111111111")
+
+         $appRegistration.Api.PreAuthorizedApplications = New-Object 'System.Collections.Generic.List[Microsoft.Open.MSGraph.Model.PreAuthorizedApplication]'
+         $appRegistration.Api.PreAuthorizedApplications.Add($preAuthorizedApplication1)
+         $appRegistration.Api.PreAuthorizedApplications.Add($preAuthorizedApplication2)
+
+         Set-AzureADMSApplication -ObjectId $appRegistration.Id -Api $appRegistration.Api | out-null
+
+         Write-Host "Waiting on app registration $appRegistrationName to settle"
+         
+         Start-Sleep -Seconds 10
+
+         # add the enterprise app to the app registration
+         New-AzureADServicePrincipal -AccountEnabled $true -AppId $appRegistration.AppId
+
+         Write-Host "Waiting on enterprise app $appRegistrationName to settle"
+         
+         Start-Sleep -Seconds 10
+      }
+
       $appId = $appRegistration.AppId
 
       $enterpriseAppServicePrincipal = Get-AzureADServicePrincipal -filter "AppId eq '$appId'"
