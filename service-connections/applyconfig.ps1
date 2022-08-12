@@ -2,7 +2,8 @@
 # rights to the similarly named resource group, and applies any additional roles.
 
 param(
-  [Parameter(Mandatory = $true)][string]$pat
+  [Parameter(Mandatory = $true)][string]$pat,
+  [Parameter(Mandatory = $true)][string]$json
 )
 
 function Add-ResourceGroup($location, $name) {
@@ -13,7 +14,7 @@ function Update-AppRegistration($servicePrincipalId, $appName, $roles) {
   $app = az ad app show --id $servicePrincipalId | ConvertFrom-Json
 
   if (!$app) {
-    Write-Error "Failed to get app registration for $servicePrincipalId"
+    Throw "Failed to get app registration for $servicePrincipalId"
   }
 
   Write-Host "Updating name of service principal $servicePrincipalId from $($app.displayName) to $appName"
@@ -46,6 +47,13 @@ function Add-ServiceConnection($azureDevOps, $accesstoken, $appName, $scope) {
 
   $servicePrincipalId = Get-ServicePrincipalIdOfServiceConnection $azureDevOps $projectId $header $appName
   if ($servicePrincipalId) {
+    Write-Host "Found service connection $appName with principal id $servicePrincipalId"
+
+    $app = az ad app show --id $servicePrincipalId | ConvertFrom-Json
+    if (!$app) {
+      Throw "Failed to get app registration for $servicePrincipalId"
+    }
+     
     return $servicePrincipalId;
   }
 
@@ -95,9 +103,51 @@ function Add-ServiceConnection($azureDevOps, $accesstoken, $appName, $scope) {
     Body    = $body | ConvertTo-Json -Depth 100
   }
 
-  Invoke-RestMethod @createConnectionRequest  | out-null
+  $connection = Invoke-RestMethod @createConnectionRequest
 
-  return Get-ServicePrincipalIdOfServiceConnection $azureDevOps $projectId $header $appName
+  Write-Host "Authorizing $appName $($connection.id) for everyone"
+
+  $shareConnectionBody = @{
+    resource     = @{
+      id   = $connection.id
+      type = "endpoint"
+      name = ""
+    }
+    allPipelines = @{
+      authorized = $True
+    }
+  }
+
+  $shareConnectionRequest = @{ 
+    Method  = 'PATCH'
+    Uri     = "https://dev.azure.com/$($azureDevOps.organizationName)/$projectId/_apis/pipelines/pipelinePermissions/endpoint/$($connection.id)?api-version=5.1-preview.1" # dont ask why this api version is different
+    Headers = $postHeaders
+    Body    = $shareConnectionBody | ConvertTo-Json -Depth 100
+  }
+
+  Invoke-RestMethod @shareConnectionRequest | out-null
+
+  while ($true) {
+    Write-Host "Waiting until $appName settles in"
+    
+    Start-Sleep -Seconds 3
+
+    $serviceConnectionId = Get-ServicePrincipalIdOfServiceConnection $azureDevOps $projectId $header $appName
+
+    if ($serviceConnectionId) {
+      Write-Host "$appName is settled in, wait for az cli to pickup principal"
+
+      $app = az ad app show --id $serviceConnectionId | ConvertFrom-Json
+
+      if ($app) {
+        Write-Host "$appName found in az cli"
+        
+        return $serviceConnectionId
+      }
+
+      Write-Host "$appName not settled in az cli"
+    }
+  }
 }
 
 function Get-ServicePrincipalIdOfServiceConnection($azureDevOps, $projectId, $header, $name) {
@@ -116,6 +166,9 @@ function Get-ServicePrincipalIdOfServiceConnection($azureDevOps, $projectId, $he
 
     return $principalId
   }
+  else {
+    Write-Host "Found $($serviceConnections.count) principals for $name"
+  }
 }
 
 function Format-String($string, $tokenSources) {
@@ -127,27 +180,43 @@ function Format-String($string, $tokenSources) {
   return $string
 }
 
-$config = Get-Content -Path config.json | ConvertFrom-Json
+$config = Get-Content -Path $json | ConvertFrom-Json
 
 foreach ($serviceConnection in $config.serviceConnections) {
   foreach ($environment in $serviceConnection.environments) {
 
+    Write-Host "Setting account to $($environment.subscriptionId)"
+
     az account set -s $environment.subscriptionId
 
-    $scope = "/subscriptions/$($environment.subscriptionId)";
-    if ($serviceConnection.scope -eq "resourcegroup") {
-      $scope += "/resourcegroups/$appName"
-    }
-    
     foreach ($region in $serviceConnection.regions) {
       $appName = Format-String $serviceConnection.name $region, $environment
-
+    
+      $scope = "/subscriptions/$($environment.subscriptionId)";
+      if ($serviceConnection.scope -eq "resourcegroup") {
+        $scope += "/resourcegroups/$appName"
+      }
+        
       $appRoles = @()
       foreach ($resourceGroup in $serviceConnection.resourceGroups.PSObject.Properties) {
         $resourceGroupName = Format-String $resourceGroup.Name $region, $environment, ([PSCustomObject]@{ name = $appName })
 
+        Write-Host "Processing $appName"
+
         if ($resourceGroup.Name.Contains("{name}")) {
-          Write-Host "Creating resource group $resourceGroupName in $($region.location)"
+          $existingGroup = az group show -g $resourceGroupName | ConvertFrom-Json
+
+          if ($existingGroup) {
+            if ($existingGroup.location -eq $region.location) {
+              Write-Host "Resource group $resourceGroupName exists"
+            }
+            else {
+              Write-Host "WARNING: Resource group $resourceGroupName exists in $($existingGroup.location)"
+            }
+          }
+          else {
+            Write-Host "Creating resource group $resourceGroupName in $($region.location)"
+          }
 
           Add-ResourceGroup $region.location $resourceGroupName
         }
@@ -155,6 +224,8 @@ foreach ($serviceConnection in $config.serviceConnections) {
         foreach ($role in $resourceGroup.Value) {
           $appRoles += @{ name = $role; scope = "/subscriptions/$($environment.subscriptionId)/resourceGroups/$resourceGroupName" }
         }
+
+        Write-Host "--"
       }
 
       foreach ($role in $serviceConnection.subscription) {
@@ -166,6 +237,8 @@ foreach ($serviceConnection in $config.serviceConnections) {
       if (!$serviceprincipalid) {
         Throw "Failed to create service connection"
       }
+
+      Write-Host "Updating $appName to have roles $($appRoles | ConvertTo-Json -Depth 10)"
 
       Update-AppRegistration $serviceprincipalid $appName $appRoles
     }
