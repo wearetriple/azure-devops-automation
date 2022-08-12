@@ -20,11 +20,18 @@ function Update-AppRegistration($servicePrincipalId, $appName, $roles) {
   Write-Host "Updating name of service principal $servicePrincipalId from $($app.displayName) to $appName"
   
   az ad app update --id $servicePrincipalId --display-name $appName  | out-null
+  
+  $sp = az ad sp list --display-name $appName | ConvertFrom-Json
 
-  foreach ($role in $roles) {
-    Write-Host "Adding $($role.name) with scope $($role.scope) to $appName"
+  if ($sp) {
+    foreach ($role in $roles) {
+      Write-Host "Adding $($role.name) with scope $($role.scope) to $appName"
 
-    az ad sp create-for-rbac -n $appName --role $role.name --scopes $role.scope  | out-null
+      az role assignment create --role $role.name --assignee-object-id $sp.id --assignee-principal-type ServicePrincipal --scope $role.scope | out-null
+    }
+  }
+  else {
+    Write-Host "Cannot find service principal with display name $appName"
   }
 
   return;
@@ -106,7 +113,7 @@ function Add-ServiceConnection($azureDevOps, $accesstoken, $appName, $scope) {
   $connection = Invoke-RestMethod @createConnectionRequest
 
   Write-Host "Authorizing $appName $($connection.id) for everyone"
-
+  
   $shareConnectionBody = @{
     resource     = @{
       id   = $connection.id
